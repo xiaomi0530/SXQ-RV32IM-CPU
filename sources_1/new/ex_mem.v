@@ -8,6 +8,7 @@ module ex_mem #(
     input  wire clk,
     input  wire rst_n,
     input  wire pipeline_hold,
+    input  wire memory_hold,
     input  wire older_flush,
     input  wire ex_valid,
 
@@ -82,7 +83,14 @@ module ex_mem #(
             mem_ctrl_defer <= 1'b0;
             mem_ctrl_dep_rs1 <= 1'b0;
             mem_ctrl_both_dep <= 1'b0;
-        end else if (!pipeline_hold) begin
+        end else if (memory_hold) begin
+            // Retain the outstanding transaction and all its metadata.
+        end else if (pipeline_hold) begin
+            // The older MEM instruction drains once while EX runs MUL/DIV.
+            mem_valid<=0; mem_regs_we<=0; mem_dmem_we<=0; mem_dmem_re<=0;
+            mem_branch_flag<=0; mem_jalr_flag<=0; mem_ret_flag<=0;
+            mem_pred_taken<=0; mem_ctrl_defer<=0; mem_ctrl_dep_rs1<=0; mem_ctrl_both_dep<=0;
+        end else begin
             mem_valid <= ex_valid;
             mem_regs_we <= ex_regs_we;
             mem_dmem_we <= ex_dmem_we;
@@ -98,7 +106,7 @@ module ex_mem #(
     end
 
     always @(posedge clk) begin
-        if (!pipeline_hold) begin
+        if (!pipeline_hold && !memory_hold) begin
             mem_regs_w_addr  <= ex_regs_w_addr;
             mem_regs_w_data  <= ex_regs_w_data;
             mem_dmem_wr_addr <= ex_dmem_wr_addr;

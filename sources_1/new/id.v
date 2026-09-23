@@ -86,7 +86,8 @@ module id(
     assign id_rd_addr  = id_instr[11:7];
 
     assign id_regs_we  = type_r | type_i_alu | type_i_load | type_i_jalr | type_u_lui | type_u_auipc | type_j_jal;
-    assign id_regs_re  = type_r | type_i_alu | type_i_load | type_i_jalr | type_s | type_b;
+    wire csr_reg_source = opcode==7'h73 && (funct3==1 || funct3==2 || funct3==3);
+    assign id_regs_re  = csr_reg_source | type_r | type_i_alu | type_i_load | type_i_jalr | type_s | type_b;
     assign id_rs1_used = type_r | type_i_alu | type_i_load | type_i_jalr | type_s | type_b;
     assign id_rs2_used = type_r | type_s | type_b;
 

@@ -65,28 +65,32 @@ module branch_predictor #(
                 branch_tag[i]    <= {TAG_BITS{1'b0}};
                 bht_ctr[i]    <= 2'b01;
             end
-        end else if (update_en) begin
-            if (branch_valid[update_idx] && (branch_tag[update_idx] == update_tag)) begin
-                if (update_taken) begin
-                    case (bht_ctr[update_idx])
-                        2'b00: bht_ctr[update_idx] <= 2'b01;
-                        2'b01: bht_ctr[update_idx] <= 2'b10;
-                        default: bht_ctr[update_idx] <= 2'b11;
-                    endcase
-                end else begin
-                    case (bht_ctr[update_idx])
-                        2'b11: bht_ctr[update_idx] <= 2'b10;
-                        2'b10: bht_ctr[update_idx] <= 2'b01;
-                        default: bht_ctr[update_idx] <= 2'b00;
-                    endcase
+        end else begin
+            // Decode the write index per entry. Do not read the entire BHT
+            // through a large mux to generate its own write enable.
+            for (i = 0; i < ENTRY_NUM; i = i + 1) begin
+                if (update_en && update_idx == i) begin
+                    if (update_taken) begin
+                        branch_valid[i] <= 1'b1;
+                        branch_tag[i] <= update_tag;
+                    end
+                    if (branch_valid[i] && branch_tag[i] == update_tag) begin
+                        if (update_taken) begin
+                            case (bht_ctr[i])
+                                2'b00: bht_ctr[i]<=2'b01;
+                                2'b01: bht_ctr[i]<=2'b10;
+                                default: bht_ctr[i]<=2'b11;
+                            endcase
+                        end else begin
+                            case (bht_ctr[i])
+                                2'b11: bht_ctr[i]<=2'b10;
+                                2'b10: bht_ctr[i]<=2'b01;
+                                default: bht_ctr[i]<=2'b00;
+                            endcase
+                        end
+                    end else if(update_taken) bht_ctr[i]<=2'b10;
                 end
-            end else if (update_taken) begin
-                branch_valid[update_idx]  <= 1'b1;
-                branch_tag[update_idx]    <= update_tag;
-                bht_ctr[update_idx]    <= 2'b10;
             end
         end
     end
-
 endmodule
-

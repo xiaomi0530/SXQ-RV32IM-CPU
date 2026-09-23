@@ -11,7 +11,8 @@ module imem #(
     input  wire        pipeline_stall,
     input  wire        pipeline_flush,
     input  wire [31:0] preif_pc_addr_i,
-    output reg   [31:0] if_instr_o,
+    output reg if_valid_o,
+    output reg [31:0] if_instr_o,
     output reg   [31:0] if_instr_addr_o,
 
     input  wire        preif_valid_i,
@@ -45,16 +46,19 @@ module imem #(
     end
 
     always @(posedge clk) begin
-        portb_read_data <= imem[portb_read_addr];
+        if (!pipeline_stall || bus_re)
+            portb_read_data <= imem[portb_read_addr];
     end
 
     always @(posedge clk) begin
         if (rst_n == `RST_ENABLE) begin
             if_instr_o <= 1'b0;
+            if_valid_o <= 0;
             if_instr_addr_o <= 32'b0;
         end else if (!pipeline_stall) begin
             if_instr_o <= imem[if_word_addr];
-            if_instr_addr_o <= {{IMEM_PAD_BITS{1'b0}}, preif_pc_addr_i[IMEM_ADDR_BITS-1:0]};
+            if_valid_o <= 1;
+            if_instr_addr_o <= preif_pc_addr_i;
         end
     end
 
@@ -76,7 +80,7 @@ module imem #(
         end else begin
             bus_ack <= 1'b0;
             bus_re_r <= bus_re;
-            if_pre_re_r <= 1'b0;
+            if (!pipeline_stall || bus_re) if_pre_re_r <= 1'b0;
             if (bus_re || if_pre_re) begin
                 if (bus_re) begin
                     mem_op_r <= mem_op;
@@ -84,7 +88,7 @@ module imem #(
                     bus_ack <= 1'b1;
                 end else if (!pipeline_flush) begin
                     if_pre_re_r <= 1'b1;
-                    if_pre_instr_addr_o <= {{IMEM_PAD_BITS{1'b0}}, if_pre_instr_addr[IMEM_ADDR_BITS-1:0]};
+                    if_pre_instr_addr_o <= if_pre_instr_addr;
                 end
             end
         end

@@ -37,11 +37,10 @@ module cpu_tb;
     reg         mem_ctrl_seen_b;
     reg         mem_ctrl_seen_jalr;
 
-    wire timer_read_fire = u_cpu.ex_dmem_re
+    wire timer_read_fire = u_cpu.ex_fire && u_cpu.ex_dmem_re
                         && ((u_cpu.ex_dmem_wr_addr == `MMIO_TIMER_LO_ADDR)
                          || (u_cpu.ex_dmem_wr_addr == `MMIO_TIMER_HI_ADDR));
-    wire retire_fire = !u_cpu.pipeline_hold
-                    && u_cpu.mem_valid;
+    wire retire_fire = u_cpu.wb_valid || u_cpu.sys_retire;
     wire bench_ex_ctrl_fire = bench_active
                             && !u_cpu.pipeline_hold
                             && !u_cpu.mem_ctrl_mispredict
@@ -143,13 +142,14 @@ module cpu_tb;
     endfunction
 
     cpu u_cpu(
+        .irq_external(1'b0),
         .clk   (clk  ),
         .rst_n (rst_n),
         .led   (led  )
     );
 
     initial clk = 1'b0;
-    always #5 clk = ~clk;
+    always #(500_000_000.0 / `CPU_CLK_FREQ_HZ) clk = ~clk;
 
     initial begin
         rst_n = 1'b0;
@@ -195,7 +195,8 @@ module cpu_tb;
                 && u_cpu.bus_m_addr[5:0] != `MMIO_UART_TX_OFFSET
                 && u_cpu.bus_m_addr[5:0] != `MMIO_UART_STATUS_OFFSET) begin
             $display("[%0t ns] MMIO READ  addr=%08x", $time, u_cpu.bus_m_addr);
-            #10;
+            @(negedge clk);
+            wait(u_cpu.bus_m_ack);
             $display("data=%08x ", u_cpu.bus_m_dat_o);
         end
     end
@@ -206,7 +207,8 @@ module cpu_tb;
                 && u_cpu.bus_m_addr[5:0] != `MMIO_UART_TX_OFFSET
                 && u_cpu.bus_m_addr[5:0] != `MMIO_UART_STATUS_OFFSET) begin
             $display("[%0t ns] MMIO WRITE  addr=%08x", $time, u_cpu.bus_m_addr);
-            #10;
+            @(negedge clk);
+            wait(u_cpu.bus_m_ack);
             $display("data=%08x ", u_cpu.bus_m_dat_o);
         end
     end

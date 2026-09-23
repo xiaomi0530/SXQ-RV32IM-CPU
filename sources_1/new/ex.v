@@ -127,7 +127,7 @@ module ex #(
     wire jump_target_mismatch;
     wire jump_mispredict;
 
-    wire [IMEM_ADDR_BITS-1:0] add_res_low = add_res[IMEM_ADDR_BITS-1:0];
+    wire [IMEM_ADDR_BITS-1:0] add_res_low = {add_res[IMEM_ADDR_BITS-1:1],1'b0};
 
     assign ex_actual_jump_addr   = ex_jump_flag ? add_res_low : ex_branch_jump_addr;
     assign ex_redirect_addr      = ex_actual_jump_flag ? ex_actual_jump_addr

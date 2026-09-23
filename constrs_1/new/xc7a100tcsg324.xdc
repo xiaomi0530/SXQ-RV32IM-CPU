@@ -47,4 +47,4 @@ set_property PACKAGE_PIN U13 [get_ports {an[7]}]
 
 
 # targeted fanout limit for imem instruction bus (use property; set_max_fanout not supported in XDC)
-set_property MAX_FANOUT 48 [get_nets -hier -filter {NAME =~ "*u_imem/if_instr_o_reg*"}]
+set_property -quiet MAX_FANOUT 48 [get_nets -quiet -hier -filter {NAME =~ "*u_imem/if_instr_o_reg*"}]

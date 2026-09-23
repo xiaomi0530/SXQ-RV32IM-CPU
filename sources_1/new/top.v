@@ -10,10 +10,10 @@ module top(
 );
 
     wire locked;
-    wire clk_100mhz;
+    wire clk_cpu;
     wire cpu_rst_n;
     clk_main_100mhz u_clk_main_100mhz(
-      .clk_out1(clk_100mhz),
+      .clk_out1(clk_cpu),
       .resetn(rst_n),
       .locked(locked),
       .clk_in1(clk)
@@ -21,7 +21,8 @@ module top(
 
     assign cpu_rst_n = locked;
     cpu u_cpu(
-        .clk    (clk_100mhz ),
+        .irq_external(1'b0),
+        .clk    (clk_cpu ),
         .rst_n  (cpu_rst_n  ),
         .led    (led        ),
         .uart_tx(uart_tx    )
@@ -30,7 +31,7 @@ module top(
     wire [31:0] display_value = {16'b0, led};
 
     seg7_display u_seg7(
-        .clk   (clk_100mhz ),
+        .clk   (clk_cpu ),
         .rst_n (cpu_rst_n   ),
         .value (display_value),
         .an    (an          ),

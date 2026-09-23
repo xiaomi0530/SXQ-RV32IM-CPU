@@ -36,8 +36,8 @@ module mul_unit(
             ready       <= 1'b0;
             latency_cnt <= 2'd0;
         end else begin
-            ready <= 1'b0;
             if (preload_en) begin
+                ready <= 1'b0;
                 busy        <= 1'b1;
                 latency_cnt <= MUL_LATENCY - 1;
             end else if (busy) begin

@@ -10,6 +10,8 @@ module if_id(
     input  wire        frontend_kill,
     input  wire        slot0_drop_buf,
 
+    input wire if_valid_i,
+    output reg id_valid_o,
     input  wire [31:0] if_instr_i,
     input  wire [31:0] if_instr_addr_i,
     input  wire        if_branch_nohit_i,
@@ -43,23 +45,28 @@ module if_id(
     always @(posedge clk) begin
         if (rst_n == `RST_ENABLE) begin
             id_instr_o      <= 32'b0;
+            id_valid_o <= 0;
             id_branch_nohit_o <= 1'b0;
             id_pred_taken_o <= 1'b0;
         end else if (pipeline_flush) begin
             id_instr_o      <= 32'b0;
+            id_valid_o <= 0;
             id_branch_nohit_o <= 1'b0;
             id_pred_taken_o <= 1'b0;
         end else if (!(pipeline_stall || pipeline_hold)) begin
             if (slot0_drop_buf || frontend_kill || kill_fetch_r) begin
                 id_instr_o      <= 32'b0;
+            id_valid_o <= 0;
                 id_branch_nohit_o <= 1'b0;
                 id_pred_taken_o <= 1'b0;
             end else if (if_pre_valid_i) begin
                 id_instr_o      <= if_pre_instr_i;
+                id_valid_o <= 1;
                 id_branch_nohit_o <= 1'b0;
                 id_pred_taken_o <= if_pre_pred_taken_i;
             end else begin
                 id_instr_o      <= if_instr_i;
+                id_valid_o <= if_valid_i;
                 id_branch_nohit_o <= if_branch_nohit_i;
                 id_pred_taken_o <= if_pred_taken_i;
             end

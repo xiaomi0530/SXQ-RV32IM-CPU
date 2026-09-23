@@ -66,18 +66,15 @@ module div_unit(
             iter_q           <= 6'd0;
             quotient_neg_q   <= 1'b0;
             remainder_neg_q  <= 1'b0;
+        end else if (preload) begin
+            // A newly accepted ID instruction may replace a wrong-path divide
+            // squashed by a deferred branch or trap. Never drop that preload.
+            ready<=0;
+            op_q<=op; dividend_raw_q<=op_a; divisor_raw_q<=op_b;
+            state<=S_PREP;
         end else begin
-            ready <= 1'b0;
-
             case (state)
-                S_IDLE: begin
-                    if (preload) begin
-                        op_q           <= op;
-                        dividend_raw_q <= op_a;
-                        divisor_raw_q  <= op_b;
-                        state          <= S_PREP;
-                    end
-                end
+                S_IDLE: begin end
 
                 S_PREP: begin
                     if (divisor_zero) begin

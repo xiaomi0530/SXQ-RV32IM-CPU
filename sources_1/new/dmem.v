@@ -33,8 +33,8 @@ module dmem #(
     end
 
     wire [DMEM_WORD_ADDR_BITS-1:0] word_addr = wr_addr[DMEM_ADDR_BITS-1:2];
-    wire we = bus_stb && bus_we;
-    wire re = bus_stb && !bus_we;
+    wire we = rst_n && bus_stb && bus_we;
+    wire re = rst_n && bus_stb && !bus_we;
 
     reg bus_ack_w;
     reg bus_ack_r;
@@ -98,8 +98,7 @@ module dmem #(
             word_data <= {dmem3[word_addr], dmem2[word_addr],dmem1[word_addr], dmem0[word_addr]};
             bus_ack_r <= 1'b1;
         end
-        mem_op_r <= mem_op;
-        wr_addr_r <= wr_addr[1:0];
+        if (re) begin mem_op_r <= mem_op; wr_addr_r <= wr_addr[1:0]; end
         re_r <= re;
     end
 

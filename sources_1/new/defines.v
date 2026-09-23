@@ -83,7 +83,7 @@
 // Core clock / UART
 // ---------------------------------------------------------------------------
 `ifndef CPU_CLK_FREQ_HZ
-`define CPU_CLK_FREQ_HZ 100_000_000
+`define CPU_CLK_FREQ_HZ 90_000_000
 `endif
 
 `ifndef CPU_UART_BAUD_RATE_SYNTH

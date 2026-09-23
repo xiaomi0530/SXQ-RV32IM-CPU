@@ -5,7 +5,10 @@ module cpu(
     input  wire        clk,
     input  wire        rst_n,
     output wire [15:0] led,
-    output wire        uart_tx
+    output wire        uart_tx,
+    input wire irq_external,
+    output reg         memory_fault,
+    output reg [31:0]  memory_fault_addr
 );
 
     localparam integer IMEM_ADDR_BITS = `IMEM_ADDR_BITS;
@@ -14,11 +17,27 @@ module cpu(
     // ------------------------------------------------------------------------
     // Global control
     // ------------------------------------------------------------------------
-    wire        pipeline_stall;
+    wire hazard_stall;
+    wire mem_exception, mem_far_redirect;
+    wire sys_stop, sys_busy, sys_flush, sys_redirect, sys_rf_we, sys_retire, trap_enter;
+    wire sys_irq_pending;
+    wire [31:0] sys_pc, sys_rf_data;
+    wire [4:0] sys_rf_rd;
+    wire [63:0] time_value, instret_value;
+    wire irq_timer, irq_software;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] ext_irq_sync;
+    always @(posedge clk) if(!rst_n) ext_irq_sync<=0; else ext_irq_sync<={ext_irq_sync[0],irq_external};
+    wire pipeline_stall = hazard_stall | sys_stop;
     wire        pipeline_flush;
     wire        ex_mul_busy;
     wire        ex_div_busy;
-    wire        pipeline_hold  = ex_mul_busy | ex_div_busy;
+    wire        execute_hold = ex_mul_busy | ex_div_busy;
+    wire        mem_wait;
+    wire        mem_fault_now;
+    wire        memory_hold = mem_wait | mem_exception;
+    wire        pipeline_hold = execute_hold | memory_hold | sys_busy;
+    wire        ex_fire;
+    wire        mem_retire;
     wire        pipeline_block = pipeline_stall | pipeline_hold;
 
     // ------------------------------------------------------------------------
@@ -40,6 +59,7 @@ module cpu(
     // ------------------------------------------------------------------------
     // IF
     // ------------------------------------------------------------------------
+    wire if_valid, id_valid_reg;
     wire [31:0] if_instr;
     wire [31:0] if_instr_addr;
     wire [31:0] if_pre_instr;
@@ -226,6 +246,9 @@ module cpu(
 
     wire        bus_m_stb;
     wire        bus_m_ack;
+    wire        bus_m_ready;
+    wire        bus_m_err;
+    wire [2:0]  bus_mem_op;
     wire        bus_m_we;
     wire [31:0] bus_m_addr;
     wire [31:0] bus_m_dat_i;
@@ -300,14 +323,17 @@ module cpu(
                                 || (id_alu_op == `ALU_OP_MULHSU);
     assign id_mul_signed_b       = (id_alu_op == `ALU_OP_MUL)
                                 || (id_alu_op == `ALU_OP_MULH);
-    assign id_mul_preload        = id_mul_op
+    // Recognize the exact M encoding before bypassing the global legality mux.
+    // Do not route the full SYSTEM/illegal-instruction decoder into DSP enables.
+    wire id_muldiv_allowed = id_instr[6:0]==7'h33 && id_instr[31:25]==7'h01 &&
+                             id_instr_addr[31:IMEM_ADDR_BITS]==0 && id_instr_addr[1:0]==0 &&
+                             !hazard_stall && !sys_irq_pending;
+    assign id_mul_preload        = id_mul_op && id_muldiv_allowed
                                 && !pipeline_flush
-                                && !pipeline_stall
                                 && !pipeline_hold;
     assign id_div_op             = (id_alu_op == `ALU_OP_DIVREM);
-    assign id_div_preload        = id_div_op
+    assign id_div_preload        = id_div_op && id_muldiv_allowed
                                 && !pipeline_flush
-                                && !pipeline_stall
                                 && !pipeline_hold;
     assign ex_ctrl_pc_low          = ex_instr_addr[IMEM_ADDR_BITS-1:0];
     assign ex_ctrl_pred_target_low = ex_pred_target;
@@ -315,32 +341,33 @@ module cpu(
     assign ex_ctrl_other_operand = ex_ctrl_dep_rs1 ? ex_alu_num2 : ex_alu_num1;
     assign ex_ctrl_jalr_imm12    = ex_alu_num2[11:0];
     assign ex_ctrl_both_dep      = ex_ctrl_dep_rs1 && ex_ctrl_dep_rs2;
-    assign ctrl_resolve_mispredict = mem_ctrl_mispredict || ex_mispredict;
+    assign ctrl_resolve_mispredict = !mem_exception && !mem_far_redirect && !sys_busy &&
+                                       (mem_ctrl_mispredict || (ex_fire && ex_mispredict));
     assign ctrl_resolve_redirect_addr = mem_ctrl_mispredict ? mem_ctrl_redirect_addr
                                                             : ex_redirect_addr;
-    assign bp_update_sel_mem     = mem_ctrl_resolve_en && mem_branch_flag;
+    assign bp_update_sel_mem     = mem_ctrl_resolve_en && mem_branch_flag && !mem_exception;
     assign bp_update_en          = bp_update_sel_mem
                                 || (!bp_update_sel_mem
                                  && !mem_ctrl_mispredict
-                                 && ex_branch_flag
+                                 && ex_fire && ex_branch_flag
                                  && !ex_ctrl_defer);
     assign bp_update_pc          = bp_update_sel_mem ? {{IMEM_PAD_BITS{1'b0}}, mem_ctrl_pc_low} : ex_instr_addr;
     assign bp_update_hash        = bp_update_sel_mem ? mem_branch_hash : ex_branch_hash;
     assign bp_update_taken       = bp_update_sel_mem ? mem_ctrl_actual_jump_flag
                                                      : ex_actual_jump_flag;
-    assign jtb_update_sel_mem    = mem_ctrl_resolve_en && mem_jalr_flag && !mem_ret_flag;
+    assign jtb_update_sel_mem    = mem_ctrl_resolve_en && mem_jalr_flag && !mem_ret_flag && !mem_exception;
     assign jtb_update_en         = jtb_update_sel_mem
                                 || (!jtb_update_sel_mem
                                  && !mem_ctrl_mispredict
-                                 && ex_jalr_flag
+                                 && ex_fire && ex_jalr_flag
                                  && !ex_ret_flag
                                  && !ex_ctrl_defer);
     assign jtb_update_pc         = jtb_update_sel_mem ? {{IMEM_PAD_BITS{1'b0}}, mem_ctrl_pc_low} : ex_instr_addr;
     assign jtb_update_target     = jtb_update_sel_mem ? mem_ctrl_actual_jump_addr_low
                                                       : ex_actual_jump_addr;
-    assign ras_ex_jump_flag      = ex_jump_flag && !ex_ctrl_defer && !mem_ctrl_mispredict;
-    assign ras_ex_call_flag      = ex_call_flag && !ex_ctrl_defer && !mem_ctrl_mispredict;
-    assign ras_ex_ret_flag       = ex_ret_flag && !ex_ctrl_defer && !mem_ctrl_mispredict;
+    assign ras_ex_jump_flag      = ex_fire && ex_jump_flag && !ex_ctrl_defer && !mem_ctrl_mispredict;
+    assign ras_ex_call_flag      = ex_fire && ex_call_flag && !ex_ctrl_defer && !mem_ctrl_mispredict;
+    assign ras_ex_ret_flag       = ex_fire && ex_ret_flag && !ex_ctrl_defer && !mem_ctrl_mispredict;
 
     frontend_ctrl u_frontend_ctrl (
         .if_instr                     (if_instr                     ),
@@ -448,6 +475,8 @@ module cpu(
     pc u_pc(
         .clk            (clk                  ),
         .rst_n          (rst_n                ),
+        .system_redirect(sys_redirect),
+        .system_pc(sys_pc),
         .redirect_flag  (frontend_redirect_flag),
         .redirect_force (ctrl_resolve_mispredict),
         .redirect_addr  (frontend_redirect_addr),
@@ -463,6 +492,7 @@ module cpu(
         .pipeline_stall     (pipeline_block    ),
         .pipeline_flush     (pipeline_flush    ),
         .preif_pc_addr_i    (preif_pc_addr     ),
+        .if_valid_o(if_valid),
         .if_instr_o         (if_instr          ),
         .if_instr_addr_o    (if_instr_addr     ),
         .preif_valid_i      (preif_valid       ),
@@ -473,7 +503,7 @@ module cpu(
         .bus_ack            (bus_s0_ack        ),
         .r_addr             (bus_s0_addr       ),
         .bus_we             (bus_s0_we         ),
-        .mem_op             (ex_mem_op         ),
+        .mem_op             (bus_mem_op        ),
         .r_data             (bus_s0_dat_i      )
     );
 
@@ -520,6 +550,8 @@ module cpu(
         .pipeline_flush  (pipeline_flush  ),
         .frontend_kill   (frontend_redirect_kill_q),
         .slot0_drop_buf  (if_pre_valid && slot0_ctrl_redirect),
+        .if_valid_i(if_valid),
+        .id_valid_o(id_valid_reg),
         .if_instr_i      (if_instr        ),
         .if_instr_addr_i (if_instr_addr   ),
         .if_branch_nohit_i(if_is_b && !if_branch_hit),
@@ -545,7 +577,7 @@ module cpu(
     assign id_branch_nohit= id_take_live_if ? (if_is_b && !if_branch_hit) : id_branch_nohit_reg;
     assign id_pred_taken  = id_take_live_if ? if_pred_taken_eff : id_pred_taken_reg;
     assign id_pred_target = id_take_live_if ? if_pred_target_eff: id_pred_target_reg;
-    assign id_valid       = (id_instr != 32'b0);
+    assign id_valid       = id_take_live_if ? if_valid : id_valid_reg;
 
     id u_id(
         .clk                (clk                ),
@@ -588,7 +620,7 @@ module cpu(
         .id_ctrl_defer  (id_ctrl_defer  ),
         .id_ctrl_dep_rs1(id_ctrl_dep_rs1),
         .id_ctrl_dep_rs2(id_ctrl_dep_rs2),
-        .pipeline_stall (pipeline_stall )
+        .pipeline_stall (hazard_stall )
     );
 
     // ------------------------------------------------------------------------
@@ -655,7 +687,7 @@ module cpu(
     // ------------------------------------------------------------------------
     // EX
     // ------------------------------------------------------------------------
-    assign pipeline_flush = ctrl_resolve_mispredict;
+    assign pipeline_flush = ctrl_resolve_mispredict | sys_flush;
 
     ex u_ex(
         .mul_preload           (id_mul_preload         ),
@@ -696,8 +728,9 @@ module cpu(
     ex_mem u_ex_mem(
         .clk                    (clk                    ),
         .rst_n                  (rst_n                  ),
-        .pipeline_hold          (pipeline_hold          ),
-        .older_flush            (mem_ctrl_mispredict    ),
+        .pipeline_hold          (execute_hold           ),
+        .memory_hold            (memory_hold | sys_busy),
+        .older_flush            (mem_ctrl_mispredict | sys_flush),
         .ex_valid               (ex_valid               ),
         .ex_regs_we             (ex_regs_we             ),
         .ex_regs_w_addr         (ex_regs_w_addr         ),
@@ -770,7 +803,21 @@ module cpu(
         .mem_ctrl_redirect_addr(mem_ctrl_redirect_addr)
     );
 
-    assign bus_m_stb = (ex_dmem_we || ex_dmem_re) && !mem_ctrl_mispredict;
+    // Access starts in EX, but its response belongs to the following MEM slot.
+    // While waiting, retain MEM and EX; never reissue EX or retire invalid data.
+    wire mem_access = mem_valid && (mem_dmem_re || mem_dmem_we);
+    assign mem_wait = mem_access && !bus_m_ack;
+    assign mem_fault_now = mem_access && bus_m_ack && bus_m_err;
+    assign mem_retire = mem_valid && !memory_hold && !sys_busy;
+    assign ex_fire = ex_valid && !pipeline_hold && !mem_ctrl_mispredict && !mem_far_redirect;
+    assign bus_m_stb = rst_n && ex_fire && (ex_dmem_we || ex_dmem_re);
+    always @(posedge clk) begin
+        if (!rst_n) begin memory_fault<=0; memory_fault_addr<=0; end
+        else begin
+            memory_fault<=mem_fault_now;
+            if(mem_fault_now) memory_fault_addr<=mem_dmem_wr_addr;
+        end
+    end
     assign bus_m_we = ex_dmem_we && !mem_ctrl_mispredict;
     assign bus_m_dat_i = ex_dmem_w_data;
     assign bus_m_addr = ex_dmem_wr_addr;
@@ -781,6 +828,10 @@ module cpu(
         .rst_n        (rst_n        ),
         .bus_m_stb    (bus_m_stb    ),
         .bus_m_ack    (bus_m_ack    ),
+        .bus_m_ready  (bus_m_ready  ),
+        .bus_m_err    (bus_m_err    ),
+        .bus_m_op     (ex_mem_op    ),
+        .bus_mem_op   (bus_mem_op   ),
         .bus_m_we     (bus_m_we     ),
         .bus_m_addr   (bus_m_addr   ),
         .bus_m_dat_i  (bus_m_dat_i  ),
@@ -816,11 +867,12 @@ module cpu(
         .w_data  (bus_s1_dat_o   ),
         .wr_addr (bus_s1_addr    ),
         .bus_we  (bus_s1_we      ),
-        .mem_op  (ex_mem_op      ),
+        .mem_op  (bus_mem_op     ),
         .r_data  (bus_s1_dat_i   )
     );
 
     mmio u_mmio(
+        .time_value(time_value),.instret_value(instret_value),.irq_timer(irq_timer),.irq_software(irq_software),
         .clk        (clk            ),
         .rst_n      (rst_n          ),
         .bus_stb    (bus_s2_stb     ),
@@ -857,9 +909,9 @@ module cpu(
     mem_wb u_mem_wb(
         .clk             (clk             ),
         .rst_n           (rst_n           ),
-        .mem_valid       (mem_valid       ),
+        .mem_valid       (mem_retire      ),
         .mem_dmem_re     (mem_dmem_re     ),
-        .mem_regs_we     (mem_regs_we     ),
+        .mem_regs_we     (mem_regs_we && mem_retire),
         .mem_regs_w_addr (mem_regs_w_addr ),
         .mem_regs_w_data (mem_actual_regs_w_data),
         .wb_valid        (wb_valid        ),
@@ -880,9 +932,9 @@ module cpu(
         .rs2_addr (id_rs2_addr           ),
         .rs1_data (id_rs1_data           ),
         .rs2_data (id_rs2_data           ),
-        .we       (wb_regs_we            ),
-        .w_addr   (wb_regs_w_addr        ),
-        .w_data   (wb_actual_regs_w_data )
+        .we       (wb_regs_we | sys_rf_we),
+        .w_addr   (sys_rf_we ? sys_rf_rd : wb_regs_w_addr),
+        .w_data   (sys_rf_we ? sys_rf_data : wb_actual_regs_w_data)
     );
 
     //Forwarding Unit
@@ -896,7 +948,7 @@ module cpu(
         .ex_regs_w_addr        (ex_regs_w_addr        ),
         .ex_regs_w_data        (ex_regs_w_data        ),
 
-        .mem_regs_we           (mem_regs_we           ),
+        .mem_regs_we           (mem_regs_we && mem_retire),
         .mem_regs_w_addr       (mem_regs_w_addr       ),
         .mem_regs_w_data       (mem_actual_regs_w_data),
 
@@ -906,6 +958,44 @@ module cpu(
 
         .id_rs1_data_fwd       (id_rs1_data_fwd       ),
         .id_rs2_data_fwd       (id_rs2_data_fwd       )
+    );
+
+
+    // Full architectural metadata stays beside the narrow prediction datapath.
+    reg [31:0] ex_branch_full, mem_pc_full, mem_target_q;
+    reg mem_taken_q;
+    wire [31:0] id_branch_imm = {{19{id_instr[31]}},id_instr[31],id_instr[7],id_instr[30:25],id_instr[11:8],1'b0};
+    always @(posedge clk) begin
+        if(!pipeline_hold && !pipeline_stall) begin
+            ex_branch_full<=id_instr_addr+id_branch_imm;
+        end
+        if(!execute_hold && !memory_hold && !sys_busy) begin
+            mem_pc_full<=ex_instr_addr;
+            mem_target_q<=ex_jump_flag ? {ex_dmem_wr_addr[31:1],1'b0} : ex_branch_full;
+            mem_taken_q<=ex_actual_jump_flag;
+        end
+    end
+    wire [31:0] late_target_sum = wb_actual_regs_w_data + {{20{mem_ctrl_jalr_imm12[11]}},mem_ctrl_jalr_imm12};
+    wire [31:0] mem_full_target = mem_ctrl_defer && mem_jalr_flag ? {late_target_sum[31:1],1'b0} : mem_target_q;
+    wire mem_taken = mem_ctrl_defer ? mem_ctrl_actual_jump_flag : mem_taken_q;
+    wire mem_control = mem_valid && (mem_branch_flag || mem_jalr_flag || mem_taken_q);
+    wire mem_target_bad = mem_control && mem_taken && mem_full_target[1];
+    assign mem_far_redirect = mem_control && mem_taken && !mem_target_bad && (|mem_full_target[31:IMEM_ADDR_BITS]);
+    assign mem_exception = mem_fault_now || mem_target_bad;
+    wire data_misaligned = mem_mem_op[1:0]==1 ? mem_dmem_wr_addr[0] :
+                           mem_mem_op[1:0]==2 ? |mem_dmem_wr_addr[1:0] : 1'b0;
+    wire [31:0] mem_exception_cause = mem_target_bad ? 0 :
+                                    mem_dmem_we ? (data_misaligned ? 6 : 7) : (data_misaligned ? 4 : 5);
+    privileged u_privileged(
+        .clk(clk),.rst_n(rst_n),.id_valid(id_valid),.id_instr(id_instr),.id_pc(id_instr_addr),.id_rs1(id_rs1_data_fwd),
+        .older_empty(!ex_valid && !mem_valid && !wb_valid),.older_redirect(ctrl_resolve_mispredict),
+        .mem_exception(mem_exception),.mem_cause(mem_exception_cause),.mem_pc(mem_pc_full),
+        .mem_tval(mem_target_bad ? mem_full_target : mem_dmem_wr_addr),
+        .mem_far_redirect(mem_far_redirect),.mem_target(mem_full_target),
+        .retire(wb_valid),.time_value(time_value),.irq_timer(irq_timer),.irq_software(irq_software),.irq_external(ext_irq_sync[1]),
+        .id_stop(sys_stop),.busy(sys_busy),.flush(sys_flush),.interrupt_request(sys_irq_pending),.redirect(sys_redirect),.redirect_pc(sys_pc),
+        .rf_we(sys_rf_we),.rf_rd(sys_rf_rd),.rf_data(sys_rf_data),.system_retire(sys_retire),.trap_enter(trap_enter),
+        .instret_value(instret_value)
     );
 
 endmodule

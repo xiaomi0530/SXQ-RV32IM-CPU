@@ -94,7 +94,7 @@ module id_ex #(
             ex_ctrl_defer  <= 1'b0;
             ex_ctrl_dep_rs1 <= 1'b0;
             ex_ctrl_dep_rs2 <= 1'b0;
-        end else if (pipeline_stall) begin
+        end else if (pipeline_stall && !pipeline_hold) begin
             ex_valid       <= 1'b0;
             ex_regs_we     <= 1'b0;
             ex_dmem_we     <= 1'b0;
